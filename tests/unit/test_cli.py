@@ -16,6 +16,7 @@ def test_cli_exposes_run_and_validate_subcommands() -> None:
     assert result.exit_code == 0
     assert "run" in result.stdout
     assert "validate" in result.stdout
+    assert "resume" in result.stdout
 
 
 def test_validate_command_preflights_without_http(tmp_path: Path) -> None:
