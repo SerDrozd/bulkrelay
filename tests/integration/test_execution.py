@@ -10,6 +10,7 @@ from pydantic import BaseModel
 
 from bulkrelay.config.models import JobConfig
 from bulkrelay.execution.engine import ExecutionEngine
+from bulkrelay.mapping.request_builder import MappingError
 
 
 class UserIn(BaseModel):
@@ -31,20 +32,11 @@ def build_fake_api(received: list[dict[str, str]]) -> FastAPI:
     return app
 
 
-@pytest.mark.asyncio
-async def test_vertical_slice_csv_to_post_to_report(tmp_path: Path) -> None:
-    csv_path = tmp_path / "customers.csv"
-    csv_path.write_text(
-        "email,first_name\n"
-        "alice@example.com,Alice\n"
-        "bob@example.com,Bob\n"
-        "reject@example.com,Rejected\n",
-        encoding="utf-8",
-    )
-    config = JobConfig.model_validate(
+def make_config(input_path: Path) -> JobConfig:
+    return JobConfig.model_validate(
         {
             "version": 1,
-            "input": {"file": str(csv_path)},
+            "input": {"file": str(input_path)},
             "request": {
                 "method": "POST",
                 "url": "http://test/users",
@@ -58,11 +50,23 @@ async def test_vertical_slice_csv_to_post_to_report(tmp_path: Path) -> None:
         }
     )
 
+
+@pytest.mark.asyncio
+async def test_vertical_slice_csv_to_post_to_report(tmp_path: Path) -> None:
+    csv_path = tmp_path / "customers.csv"
+    csv_path.write_text(
+        "email,first_name\n"
+        "alice@example.com,Alice\n"
+        "bob@example.com,Bob\n"
+        "reject@example.com,Rejected\n",
+        encoding="utf-8",
+    )
+
     received: list[dict[str, str]] = []
     transport = httpx.ASGITransport(app=build_fake_api(received))
     async with httpx.AsyncClient(transport=transport) as client:
         summary = await ExecutionEngine(client).run(
-            config=config,
+            config=make_config(csv_path),
             input_path=csv_path,
             output_root=tmp_path / "runs",
         )
@@ -75,6 +79,101 @@ async def test_vertical_slice_csv_to_post_to_report(tmp_path: Path) -> None:
     run_dir = Path(summary.run_directory)
     results = [json.loads(line) for line in (run_dir / "results.jsonl").read_text().splitlines()]
     assert [result["status_code"] for result in results] == [201, 201, 422]
+    assert [result["classification"] for result in results] == [
+        "success",
+        "success",
+        "http_client_error",
+    ]
 
     persisted_summary = json.loads((run_dir / "summary.json").read_text())
     assert persisted_summary["failed"] == 1
+
+
+@pytest.mark.asyncio
+async def test_jsonl_executes_with_same_pipeline(tmp_path: Path) -> None:
+    jsonl_path = tmp_path / "customers.jsonl"
+    jsonl_path.write_text(
+        '{"email":"alice@example.com","first_name":"Alice"}\n'
+        '{"email":"bob@example.com","first_name":"Bob"}\n',
+        encoding="utf-8",
+    )
+
+    received: list[dict[str, str]] = []
+    transport = httpx.ASGITransport(app=build_fake_api(received))
+    async with httpx.AsyncClient(transport=transport) as client:
+        summary = await ExecutionEngine(client).run(
+            config=make_config(jsonl_path),
+            input_path=jsonl_path,
+            output_root=tmp_path / "runs",
+        )
+
+    assert summary.total == 2
+    assert summary.failed == 0
+    assert [item["email"] for item in received] == ["alice@example.com", "bob@example.com"]
+
+
+@pytest.mark.asyncio
+async def test_preflight_failure_causes_no_remote_side_effects(tmp_path: Path) -> None:
+    jsonl_path = tmp_path / "customers.jsonl"
+    jsonl_path.write_text(
+        '{"email":"alice@example.com","first_name":"Alice"}\n'
+        '{"email":"bob@example.com"}\n',
+        encoding="utf-8",
+    )
+
+    received: list[dict[str, str]] = []
+    transport = httpx.ASGITransport(app=build_fake_api(received))
+    async with httpx.AsyncClient(transport=transport) as client:
+        with pytest.raises(MappingError, match="Input record 2.*first_name"):
+            await ExecutionEngine(client).run(
+                config=make_config(jsonl_path),
+                input_path=jsonl_path,
+                output_root=tmp_path / "runs",
+            )
+
+    assert received == []
+    assert not (tmp_path / "runs").exists()
+
+
+@pytest.mark.asyncio
+async def test_result_classifies_server_error(tmp_path: Path) -> None:
+    csv_path = tmp_path / "customers.csv"
+    csv_path.write_text("email,first_name\na@example.com,Alice\n", encoding="utf-8")
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(503, text="temporarily unavailable", request=request)
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+        summary = await ExecutionEngine(client).run(
+            config=make_config(csv_path),
+            input_path=csv_path,
+            output_root=tmp_path / "runs",
+        )
+
+    result = json.loads(
+        (Path(summary.run_directory) / "results.jsonl").read_text(encoding="utf-8").strip()
+    )
+    assert result["classification"] == "http_server_error"
+    assert result["status_code"] == 503
+
+
+@pytest.mark.asyncio
+async def test_result_classifies_network_error(tmp_path: Path) -> None:
+    csv_path = tmp_path / "customers.csv"
+    csv_path.write_text("email,first_name\na@example.com,Alice\n", encoding="utf-8")
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        raise httpx.ConnectError("connection refused", request=request)
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+        summary = await ExecutionEngine(client).run(
+            config=make_config(csv_path),
+            input_path=csv_path,
+            output_root=tmp_path / "runs",
+        )
+
+    result = json.loads(
+        (Path(summary.run_directory) / "results.jsonl").read_text(encoding="utf-8").strip()
+    )
+    assert result["classification"] == "network_error"
+    assert result["status_code"] is None

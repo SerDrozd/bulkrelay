@@ -54,3 +54,68 @@ request:
 
     with pytest.raises(ConfigLoadError, match="exactly one"):
         load_config(config_path)
+
+
+def test_config_rejects_unknown_fields_with_readable_path(tmp_path: Path) -> None:
+    config_path = tmp_path / "job.yaml"
+    config_path.write_text(
+        """
+version: 1
+input:
+  file: customers.csv
+request:
+  method: POST
+  url: https://api.example.com/users
+  timeout: 10
+  json:
+    email:
+      from: email
+""".strip(),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ConfigLoadError) as exc_info:
+        load_config(config_path)
+
+    assert "request.timeout: Unexpected field" in str(exc_info.value)
+
+
+def test_config_rejects_empty_json_mapping(tmp_path: Path) -> None:
+    config_path = tmp_path / "job.yaml"
+    config_path.write_text(
+        """
+version: 1
+input:
+  file: customers.csv
+request:
+  method: POST
+  url: https://api.example.com/users
+  json: {}
+""".strip(),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ConfigLoadError, match="request.json"):
+        load_config(config_path)
+
+
+def test_config_rejects_duplicate_yaml_keys(tmp_path: Path) -> None:
+    config_path = tmp_path / "job.yaml"
+    config_path.write_text(
+        """
+version: 1
+input:
+  file: customers.csv
+request:
+  method: POST
+  url: https://api.example.com/first
+  url: https://api.example.com/second
+  json:
+    email:
+      from: email
+""".strip(),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ConfigLoadError, match="duplicate key 'url'"):
+        load_config(config_path)
