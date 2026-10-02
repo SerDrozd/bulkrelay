@@ -20,6 +20,11 @@ app = typer.Typer(
 console = Console()
 
 
+@app.callback()
+def main() -> None:
+    """Run reliable bulk HTTP jobs from flat files."""
+
+
 @app.command()
 def run(
     config_path: Path = typer.Argument(

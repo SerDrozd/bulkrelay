@@ -17,20 +17,23 @@ class FieldMapping(BaseModel):
     from_column: str | None = Field(default=None, alias="from")
     value: Any | None = None
 
-    @model_validator(mode="after")
-    def exactly_one_source(self) -> FieldMapping:
-        has_column = self.from_column is not None
-        has_value = self.value is not None
+    @model_validator(mode="before")
+    @classmethod
+    def exactly_one_source(cls, data: Any) -> Any:
+        if not isinstance(data, dict):
+            return data
+        has_column = "from" in data or "from_column" in data
+        has_value = "value" in data
         if has_column == has_value:
             raise ValueError("mapping must define exactly one of 'from' or 'value'")
-        return self
+        return data
 
 
 class RequestConfig(BaseModel):
     method: Literal["POST"] = "POST"
     url: HttpUrl
     headers: dict[str, str] = Field(default_factory=dict)
-    json: dict[str, FieldMapping]
+    json_body: dict[str, FieldMapping] = Field(alias="json")
 
 
 class JobConfig(BaseModel):

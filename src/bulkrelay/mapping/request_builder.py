@@ -13,7 +13,7 @@ class MappingError(ValueError):
 def required_columns(config: RequestConfig) -> set[str]:
     return {
         mapping.from_column
-        for mapping in config.json.values()
+        for mapping in config.json_body.values()
         if mapping.from_column is not None
     }
 
@@ -30,7 +30,7 @@ def validate_columns(config: RequestConfig, columns: list[str]) -> None:
 
 def build_json_body(config: RequestConfig, record: InputRecord) -> dict[str, Any]:
     body: dict[str, Any] = {}
-    for output_name, mapping in config.json.items():
+    for output_name, mapping in config.json_body.items():
         if mapping.from_column is not None:
             body[output_name] = record.values[mapping.from_column]
         else:
