@@ -1,7 +1,9 @@
 # Reliability policy
 
-Milestone 3 adds explicit reliability controls around each HTTP attempt. BulkRelay still executes
-records sequentially; bounded concurrency belongs to Milestone 4.
+BulkRelay applies the same reliability policy to every HTTP attempt, whether records execute
+sequentially or through Milestone 4's bounded-concurrency scheduler.
+
+Concurrency is independent from retry and rate policy; see [`concurrency.md`](concurrency.md).
 
 ## Timeouts
 

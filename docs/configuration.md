@@ -19,6 +19,7 @@ request:
       value: migration
 
 execution:
+  concurrency: 8
   timeout:
     connect_seconds: 10
     read_seconds: 30
@@ -55,6 +56,7 @@ rejecting non-finite numeric values and YAML-only values such as unquoted dates.
 
 If `execution` and `retry` are omitted, BulkRelay uses bounded defaults:
 
+- concurrency: 1 active record (configurable from 1 to 100);
 - connect timeout: 10 seconds;
 - read/write timeout: 30 seconds;
 - pool timeout: 5 seconds;
@@ -65,4 +67,5 @@ If `execution` and `retry` are omitted, BulkRelay uses bounded defaults:
 - 20% jitter;
 - `Retry-After` respected.
 
-See [`reliability.md`](reliability.md) for exact semantics.
+See [`reliability.md`](reliability.md) for retry/rate semantics and [`concurrency.md`](concurrency.md)
+for bounded scheduling and interruption behavior.
