@@ -58,7 +58,50 @@ class RequestConfig(StrictModel):
         return headers
 
 
+class TimeoutConfig(StrictModel):
+    connect_seconds: float = Field(default=10.0, gt=0)
+    read_seconds: float = Field(default=30.0, gt=0)
+    write_seconds: float = Field(default=30.0, gt=0)
+    pool_seconds: float = Field(default=5.0, gt=0)
+
+
+class RateLimitConfig(StrictModel):
+    requests_per_second: float = Field(gt=0)
+
+
+class ExecutionConfig(StrictModel):
+    timeout: TimeoutConfig = Field(default_factory=TimeoutConfig)
+    rate_limit: RateLimitConfig | None = None
+
+
+class RetryConfig(StrictModel):
+    max_attempts: int = Field(default=1, ge=1, le=20)
+    statuses: frozenset[int] = Field(
+        default_factory=lambda: frozenset({408, 425, 429, 500, 502, 503, 504})
+    )
+    initial_backoff_seconds: float = Field(default=1.0, ge=0)
+    max_backoff_seconds: float = Field(default=30.0, ge=0)
+    jitter_ratio: float = Field(default=0.2, ge=0, le=1)
+    respect_retry_after: bool = True
+
+    @field_validator("statuses")
+    @classmethod
+    def validate_statuses(cls, statuses: frozenset[int]) -> frozenset[int]:
+        invalid = sorted(status for status in statuses if status < 400 or status > 599)
+        if invalid:
+            raise ValueError(f"retry statuses must be HTTP error codes (400-599): {invalid}")
+        return statuses
+
+    @model_validator(mode="after")
+    def validate_backoff_bounds(self) -> RetryConfig:
+        if self.max_backoff_seconds < self.initial_backoff_seconds:
+            raise ValueError("max_backoff_seconds must be >= initial_backoff_seconds")
+        return self
+
+
 class JobConfig(StrictModel):
     version: Literal[1]
     input: InputConfig
     request: RequestConfig
+    execution: ExecutionConfig = Field(default_factory=ExecutionConfig)
+    retry: RetryConfig = Field(default_factory=RetryConfig)

@@ -71,7 +71,7 @@ def run(
         help="Directory where run reports are written.",
     ),
 ) -> None:
-    """Validate the full input, then run an HTTP POST job and write a result report."""
+    """Validate the full input, then execute an HTTP POST job with reliability controls."""
     try:
         config = load_config(config_path)
         input_path = resolve_input_path(config_path, config.input.file)
@@ -91,6 +91,8 @@ def run(
     table.add_row("Records", str(summary.total))
     table.add_row("Succeeded", str(summary.succeeded))
     table.add_row("Failed", str(summary.failed))
+    table.add_row("HTTP attempts", str(summary.attempts))
+    table.add_row("Retried records", str(summary.retried))
     console.print(table)
     console.print(f"Report: [bold]{summary.run_directory}[/bold]")
 

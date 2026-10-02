@@ -18,11 +18,16 @@ class RunReporter:
         self._total = 0
         self._succeeded = 0
         self._failed = 0
+        self._attempts = 0
+        self._retried = 0
 
     def append(self, result: RecordResult) -> None:
         with self._results_path.open("a", encoding="utf-8") as handle:
             handle.write(json.dumps(asdict(result), ensure_ascii=False) + "\n")
         self._total += 1
+        self._attempts += result.attempts
+        if result.attempts > 1:
+            self._retried += 1
         if result.success:
             self._succeeded += 1
         else:
@@ -33,6 +38,8 @@ class RunReporter:
             total=self._total,
             succeeded=self._succeeded,
             failed=self._failed,
+            attempts=self._attempts,
+            retried=self._retried,
             run_directory=str(self.run_directory),
         )
         (self.run_directory / "summary.json").write_text(

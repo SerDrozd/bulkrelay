@@ -10,6 +10,7 @@ class ResultClassification(StrEnum):
     HTTP_CLIENT_ERROR = "http_client_error"
     HTTP_SERVER_ERROR = "http_server_error"
     HTTP_ERROR = "http_error"
+    TIMEOUT_ERROR = "timeout_error"
     NETWORK_ERROR = "network_error"
 
 
@@ -19,6 +20,8 @@ class RecordResult:
     success: bool
     classification: ResultClassification
     status_code: int | None
+    attempts: int
+    retryable: bool
     error: str | None = None
 
 
@@ -27,4 +30,6 @@ class RunSummary:
     total: int
     succeeded: int
     failed: int
+    attempts: int
+    retried: int
     run_directory: str
