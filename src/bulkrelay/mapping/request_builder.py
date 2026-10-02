@@ -67,9 +67,9 @@ def _missing_column_message(column: str, available: list[str]) -> str:
         for candidate in available
         if candidate.casefold() in normalized.replace("-", "_").split("_")
     ]
-    if token_matches:
-        match = token_matches[0]
-    else:
+    match: str | None = token_matches[0] if token_matches else None
+
+    if match is None:
         matches = get_close_matches(column, available, n=1, cutoff=0.6)
         match = matches[0] if matches else None
 

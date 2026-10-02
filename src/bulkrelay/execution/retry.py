@@ -61,11 +61,11 @@ class RetryPolicy:
             self.config.max_backoff_seconds,
         )
         if base == 0 or self.config.jitter_ratio == 0:
-            return base
+            return float(base)
 
         spread = self.config.jitter_ratio
         multiplier = (1 - spread) + (2 * spread * self._random_value())
-        return max(0.0, base * multiplier)
+        return float(max(0.0, base * multiplier))
 
 
 def parse_retry_after(value: str | None, *, now: datetime) -> float | None:

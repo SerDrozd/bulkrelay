@@ -7,7 +7,6 @@ from typing import Any
 
 from bulkrelay.config.models import JobConfig
 
-
 _CHUNK_SIZE = 1024 * 1024
 
 

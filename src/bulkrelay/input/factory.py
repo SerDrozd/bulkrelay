@@ -6,7 +6,6 @@ from bulkrelay.input.base import InputError, RecordSource
 from bulkrelay.input.csv_reader import CsvRecordSource
 from bulkrelay.input.jsonl_reader import JsonlRecordSource
 
-
 _SUPPORTED_EXTENSIONS: dict[str, type[CsvRecordSource] | type[JsonlRecordSource]] = {
     ".csv": CsvRecordSource,
     ".jsonl": JsonlRecordSource,

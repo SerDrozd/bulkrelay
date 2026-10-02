@@ -95,7 +95,7 @@ request:
         encoding="utf-8",
     )
 
-    with pytest.raises(ConfigLoadError, match="request.json"):
+    with pytest.raises(ConfigLoadError, match=r"request\.json"):
         load_config(config_path)
 
 
@@ -235,5 +235,5 @@ execution:
         encoding="utf-8",
     )
 
-    with pytest.raises(ConfigLoadError, match="execution.concurrency"):
+    with pytest.raises(ConfigLoadError, match=r"execution\.concurrency"):
         load_config(config_path)

@@ -164,7 +164,8 @@ def verify_resume_identity(
 ) -> None:
     if manifest.state in {RunState.COMPLETED, RunState.COMPLETED_WITH_FAILURES}:
         raise ResumeError(
-            f"Run {manifest.run_id} is already {manifest.state.value}; completed runs cannot be resumed"
+            f"Run {manifest.run_id} is already {manifest.state.value}; "
+            "completed runs cannot be resumed"
         )
     if manifest.input_format != input_format:
         raise ResumeError(
@@ -231,7 +232,8 @@ def load_resume_snapshot(run_directory: Path, *, input_total: int) -> ResumeSnap
                     ) from exc
                 if type(success) is not bool:  # bool only; integers must not pass as booleans.
                     raise ResumeError(
-                        f"Result journal is corrupted at line {line_number}: success must be boolean"
+                        f"Result journal is corrupted at line {line_number}: "
+                        "success must be boolean"
                     )
                 if not isinstance(classification, str) or not classification:
                     raise ResumeError(
@@ -245,11 +247,13 @@ def load_resume_snapshot(run_directory: Path, *, input_total: int) -> ResumeSnap
                     )
                 if type(retryable) is not bool:
                     raise ResumeError(
-                        f"Result journal is corrupted at line {line_number}: retryable must be boolean"
+                        f"Result journal is corrupted at line {line_number}: "
+                        "retryable must be boolean"
                     )
                 if error is not None and not isinstance(error, str):
                     raise ResumeError(
-                        f"Result journal is corrupted at line {line_number}: error must be string or null"
+                        f"Result journal is corrupted at line {line_number}: "
+                        "error must be string or null"
                     )
                 if row_number < 1 or row_number > input_total:
                     raise ResumeError(
@@ -257,7 +261,8 @@ def load_resume_snapshot(run_directory: Path, *, input_total: int) -> ResumeSnap
                     )
                 if row_number in completed_rows:
                     raise ResumeError(
-                        f"Result journal contains duplicate row_number {row_number}; refusing resume"
+                        f"Result journal contains duplicate row_number {row_number}; "
+                        "refusing resume"
                     )
                 if record_attempts < 1:
                     raise ResumeError(

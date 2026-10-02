@@ -6,7 +6,6 @@ from typer.testing import CliRunner
 
 from bulkrelay.cli.app import app
 
-
 runner = CliRunner()
 
 

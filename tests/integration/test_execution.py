@@ -125,7 +125,7 @@ async def test_preflight_failure_causes_no_remote_side_effects(tmp_path: Path) -
     received: list[dict[str, str]] = []
     transport = httpx.ASGITransport(app=build_fake_api(received))
     async with httpx.AsyncClient(transport=transport) as client:
-        with pytest.raises(MappingError, match="Input record 2.*first_name"):
+        with pytest.raises(MappingError, match=r"Input record 2.*first_name"):
             await ExecutionEngine(client).run(
                 config=make_config(jsonl_path),
                 input_path=jsonl_path,

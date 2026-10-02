@@ -50,7 +50,7 @@ def test_preflight_catches_late_jsonl_shape_drift(tmp_path: Path) -> None:
         encoding="utf-8",
     )
 
-    with pytest.raises(MappingError, match="Input record 2.*active"):
+    with pytest.raises(MappingError, match=r"Input record 2.*active"):
         preflight(make_config(path), path)
 
 

@@ -4,7 +4,7 @@ import asyncio
 import signal
 from pathlib import Path
 from types import FrameType
-from typing import Never
+from typing import Annotated, Never
 
 import typer
 from rich.console import Console
@@ -35,14 +35,16 @@ def main() -> None:
 
 @app.command()
 def validate(
-    config_path: Path = typer.Argument(
-        ...,
-        exists=True,
-        dir_okay=False,
-        readable=True,
-        resolve_path=True,
-        help="Path to a BulkRelay YAML job config.",
-    ),
+    config_path: Annotated[
+        Path,
+        typer.Argument(
+            exists=True,
+            dir_okay=False,
+            readable=True,
+            resolve_path=True,
+            help="Path to a BulkRelay YAML job config.",
+        ),
+    ],
 ) -> None:
     """Validate config, input syntax, and every record mapping without HTTP calls."""
     try:
@@ -63,19 +65,23 @@ def validate(
 
 @app.command()
 def run(
-    config_path: Path = typer.Argument(
-        ...,
-        exists=True,
-        dir_okay=False,
-        readable=True,
-        resolve_path=True,
-        help="Path to a BulkRelay YAML job config.",
-    ),
-    output_dir: Path = typer.Option(
-        Path(".bulkrelay/runs"),
-        "--output-dir",
-        help="Directory where run reports are written.",
-    ),
+    config_path: Annotated[
+        Path,
+        typer.Argument(
+            exists=True,
+            dir_okay=False,
+            readable=True,
+            resolve_path=True,
+            help="Path to a BulkRelay YAML job config.",
+        ),
+    ],
+    output_dir: Annotated[
+        Path,
+        typer.Option(
+            "--output-dir",
+            help="Directory where run reports are written.",
+        ),
+    ] = Path(".bulkrelay/runs"),
 ) -> None:
     """Validate the full input, then execute a bounded concurrent HTTP POST job."""
     try:
@@ -113,19 +119,23 @@ def run(
 
 @app.command()
 def resume(
-    run_directory: Path = typer.Argument(
-        ...,
-        exists=True,
-        file_okay=False,
-        readable=True,
-        resolve_path=True,
-        help="Existing BulkRelay run directory to resume.",
-    ),
-    config_path: Path | None = typer.Option(
-        None,
-        "--config",
-        help="Job config to use. Defaults to the config path recorded by the original run.",
-    ),
+    run_directory: Annotated[
+        Path,
+        typer.Argument(
+            exists=True,
+            file_okay=False,
+            readable=True,
+            resolve_path=True,
+            help="Existing BulkRelay run directory to resume.",
+        ),
+    ],
+    config_path: Annotated[
+        Path | None,
+        typer.Option(
+            "--config",
+            help="Job config to use. Defaults to the config path recorded by the original run.",
+        ),
+    ] = None,
 ) -> None:
     """Safely continue an interrupted run after fingerprint verification."""
     try:

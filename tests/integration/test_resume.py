@@ -182,7 +182,9 @@ async def test_resume_refuses_changed_job_config(tmp_path: Path) -> None:
         )
 
     changed_config = make_config(input_path, url="http://test/other-users")
-    async with httpx.AsyncClient(transport=httpx.MockTransport(lambda r: httpx.Response(201))) as client:
+    transport = httpx.MockTransport(lambda request: httpx.Response(201))
+
+    async with httpx.AsyncClient(transport=transport) as client:
         with pytest.raises(ResumeError, match="configuration changed"):
             await ExecutionEngine(client).run(
                 config=changed_config,
@@ -239,7 +241,9 @@ async def test_resume_refuses_duplicate_rows_in_result_journal(tmp_path: Path) -
     with results_path.open("a", encoding="utf-8") as handle:
         handle.write(first_line + "\n")
 
-    async with httpx.AsyncClient(transport=httpx.MockTransport(lambda r: httpx.Response(201))) as client:
+    transport = httpx.MockTransport(lambda request: httpx.Response(201))
+
+    async with httpx.AsyncClient(transport=transport) as client:
         with pytest.raises(ResumeError, match="duplicate row_number 1"):
             await ExecutionEngine(client).run(
                 config=config,
