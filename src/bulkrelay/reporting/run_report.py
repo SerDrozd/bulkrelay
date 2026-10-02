@@ -21,6 +21,10 @@ class RunReporter:
         self._attempts = 0
         self._retried = 0
 
+    @property
+    def processed_count(self) -> int:
+        return self._total
+
     def append(self, result: RecordResult) -> None:
         with self._results_path.open("a", encoding="utf-8") as handle:
             handle.write(json.dumps(asdict(result), ensure_ascii=False) + "\n")
@@ -33,7 +37,13 @@ class RunReporter:
         else:
             self._failed += 1
 
-    def finalize(self) -> RunSummary:
+    def finalize(
+        self,
+        *,
+        input_total: int,
+        stopped_early: bool = False,
+        forced: bool = False,
+    ) -> RunSummary:
         summary = RunSummary(
             total=self._total,
             succeeded=self._succeeded,
@@ -41,9 +51,14 @@ class RunReporter:
             attempts=self._attempts,
             retried=self._retried,
             run_directory=str(self.run_directory),
+            input_total=input_total,
+            stopped_early=stopped_early,
+            forced=forced,
         )
+        payload = asdict(summary)
+        payload["unprocessed"] = summary.unprocessed
         (self.run_directory / "summary.json").write_text(
-            json.dumps(asdict(summary), indent=2, ensure_ascii=False) + "\n",
+            json.dumps(payload, indent=2, ensure_ascii=False) + "\n",
             encoding="utf-8",
         )
         return summary

@@ -33,3 +33,10 @@ class RunSummary:
     attempts: int
     retried: int
     run_directory: str
+    input_total: int
+    stopped_early: bool = False
+    forced: bool = False
+
+    @property
+    def unprocessed(self) -> int:
+        return max(0, self.input_total - self.total)

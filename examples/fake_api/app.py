@@ -58,6 +58,13 @@ async def create_rate_limited_user(user: UserIn, response: Response) -> dict[str
     return {"created": True, "attempt": attempt, "user": user.model_dump()}
 
 
+@app.post("/concurrent/users", status_code=status.HTTP_201_CREATED)
+async def create_concurrent_user(user: UserIn) -> dict[str, Any]:
+    """Short delay that makes bounded parallelism visible in the demo."""
+    await asyncio.sleep(0.25)
+    return {"created": True, "user": user.model_dump()}
+
+
 @app.post("/slow/users", status_code=status.HTTP_201_CREATED)
 async def create_slow_user(user: UserIn) -> dict[str, Any]:
     """Sleep long enough for a low read timeout to trigger over a real socket."""

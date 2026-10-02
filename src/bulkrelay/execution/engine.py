@@ -3,9 +3,10 @@ from __future__ import annotations
 import asyncio
 import random
 import time
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Iterator
 from datetime import datetime
 from pathlib import Path
+from typing import cast
 
 import httpx
 
@@ -13,7 +14,9 @@ from bulkrelay.config.models import JobConfig, TimeoutConfig
 from bulkrelay.execution.models import RecordResult, ResultClassification, RunSummary
 from bulkrelay.execution.rate_limit import RateLimiter
 from bulkrelay.execution.retry import RetryPolicy
+from bulkrelay.execution.shutdown import ShutdownController
 from bulkrelay.input.factory import open_record_source
+from bulkrelay.input.models import InputRecord
 from bulkrelay.mapping.request_builder import build_json_body
 from bulkrelay.reporting.run_report import RunReporter
 from bulkrelay.validation.preflight import preflight
@@ -22,6 +25,7 @@ Sleep = Callable[[float], Awaitable[None]]
 Clock = Callable[[], float]
 RandomValue = Callable[[], float]
 WallClock = Callable[[], datetime]
+RecordTask = asyncio.Task[RecordResult]
 
 
 class ExecutionEngine:
@@ -45,10 +49,12 @@ class ExecutionEngine:
         config: JobConfig,
         input_path: Path,
         output_root: Path,
+        *,
+        shutdown: ShutdownController | None = None,
     ) -> RunSummary:
         # Validate the full source before causing any remote side effects. This
         # deliberately trades a second streaming read for a safer migration UX.
-        preflight(config, input_path)
+        validation = preflight(config, input_path)
         source = open_record_source(input_path)
         reporter = RunReporter(output_root)
         retry_policy = RetryPolicy(
@@ -63,27 +69,125 @@ class ExecutionEngine:
             clock=self._clock,
         )
         timeout = _httpx_timeout(config.execution.timeout)
+        controller = shutdown or ShutdownController()
 
         owns_client = self._client is None
         client = self._client or httpx.AsyncClient()
+        forced = False
         try:
-            for record in source.records():
-                body = build_json_body(config.request, record)
-                result = await self._execute_record(
-                    client=client,
-                    config=config,
-                    body=body,
-                    row_number=record.row_number,
-                    timeout=timeout,
-                    retry_policy=retry_policy,
-                    limiter=limiter,
-                )
-                reporter.append(result)
+            forced = await self._execute_records(
+                records=source.records(),
+                concurrency=config.execution.concurrency,
+                client=client,
+                config=config,
+                timeout=timeout,
+                retry_policy=retry_policy,
+                limiter=limiter,
+                reporter=reporter,
+                shutdown=controller,
+            )
         finally:
             if owns_client:
                 await client.aclose()
 
-        return reporter.finalize()
+        stopped_early = reporter.processed_count < validation.records
+        return reporter.finalize(
+            input_total=validation.records,
+            stopped_early=stopped_early,
+            forced=forced,
+        )
+
+    async def _execute_records(
+        self,
+        *,
+        records: Iterator[InputRecord],
+        concurrency: int,
+        client: httpx.AsyncClient,
+        config: JobConfig,
+        timeout: httpx.Timeout,
+        retry_policy: RetryPolicy,
+        limiter: RateLimiter,
+        reporter: RunReporter,
+        shutdown: ShutdownController,
+    ) -> bool:
+        active: set[RecordTask] = set()
+        exhausted = False
+        force_waiter = asyncio.create_task(
+            shutdown.wait_for_force(),
+            name="bulkrelay-force-shutdown",
+        )
+
+        def schedule_available() -> None:
+            nonlocal exhausted
+            while (
+                not exhausted
+                and not shutdown.stop_requested
+                and len(active) < concurrency
+            ):
+                try:
+                    record = next(records)
+                except StopIteration:
+                    exhausted = True
+                    return
+
+                body = build_json_body(config.request, record)
+                task = asyncio.create_task(
+                    self._execute_record(
+                        client=client,
+                        config=config,
+                        body=body,
+                        row_number=record.row_number,
+                        timeout=timeout,
+                        retry_policy=retry_policy,
+                        limiter=limiter,
+                    ),
+                    name=f"bulkrelay-record-{record.row_number}",
+                )
+                active.add(task)
+
+        try:
+            if shutdown.force_requested:
+                return True
+
+            schedule_available()
+
+            while active:
+                wait_set: set[asyncio.Future[object]] = {
+                    cast(asyncio.Future[object], task) for task in active
+                }
+                wait_set.add(cast(asyncio.Future[object], force_waiter))
+                done, _ = await asyncio.wait(
+                    wait_set,
+                    return_when=asyncio.FIRST_COMPLETED,
+                )
+
+                completed = sorted(
+                    (
+                        cast(RecordTask, task)
+                        for task in done
+                        if task is not force_waiter
+                    ),
+                    key=lambda task: task.get_name(),
+                )
+                for task in completed:
+                    active.remove(task)
+                    reporter.append(task.result())
+
+                if force_waiter in done:
+                    await _cancel_tasks(active)
+                    active.clear()
+                    return True
+
+                schedule_available()
+
+            return shutdown.force_requested
+        except BaseException:
+            await _cancel_tasks(active)
+            raise
+        finally:
+            if not force_waiter.done():
+                force_waiter.cancel()
+                await asyncio.gather(force_waiter, return_exceptions=True)
 
     async def _execute_record(
         self,
@@ -138,6 +242,13 @@ class ExecutionEngine:
                 retryable=retryable,
                 error=None if response.is_success else _response_error(response),
             )
+
+
+async def _cancel_tasks(tasks: set[RecordTask]) -> None:
+    for task in tasks:
+        task.cancel()
+    if tasks:
+        await asyncio.gather(*tasks, return_exceptions=True)
 
 
 def _httpx_timeout(config: TimeoutConfig) -> httpx.Timeout:

@@ -70,6 +70,7 @@ class RateLimitConfig(StrictModel):
 
 
 class ExecutionConfig(StrictModel):
+    concurrency: int = Field(default=1, ge=1, le=100)
     timeout: TimeoutConfig = Field(default_factory=TimeoutConfig)
     rate_limit: RateLimitConfig | None = None
 
