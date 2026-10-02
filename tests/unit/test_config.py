@@ -192,3 +192,48 @@ retry:
 
     with pytest.raises(ConfigLoadError, match="max_backoff_seconds"):
         load_config(config_path)
+
+
+def test_execution_concurrency_defaults_to_one(tmp_path: Path) -> None:
+    config_path = tmp_path / "job.yaml"
+    config_path.write_text(
+        """
+version: 1
+input:
+  file: customers.csv
+request:
+  method: POST
+  url: https://api.example.com/users
+  json:
+    email:
+      from: email
+""".strip(),
+        encoding="utf-8",
+    )
+
+    config = load_config(config_path)
+
+    assert config.execution.concurrency == 1
+
+
+def test_config_rejects_unbounded_concurrency(tmp_path: Path) -> None:
+    config_path = tmp_path / "job.yaml"
+    config_path.write_text(
+        """
+version: 1
+input:
+  file: customers.csv
+request:
+  method: POST
+  url: https://api.example.com/users
+  json:
+    email:
+      from: email
+execution:
+  concurrency: 101
+""".strip(),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ConfigLoadError, match="execution.concurrency"):
+        load_config(config_path)
