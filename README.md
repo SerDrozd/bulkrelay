@@ -1,5 +1,7 @@
 # BulkRelay
 
+[![CI](https://github.com/SerDrozd/bulkrelay/actions/workflows/ci.yml/badge.svg)](https://github.com/SerDrozd/bulkrelay/actions/workflows/ci.yml)
+
 Reliable bulk HTTP jobs from CSV and JSONL files.
 
 BulkRelay is a Python CLI for migrations, backfills, and one-off API jobs where a simple `for row in csv: requests.post(...)` script is not enough.
