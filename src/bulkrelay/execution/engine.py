@@ -19,6 +19,16 @@ from bulkrelay.input.factory import open_record_source
 from bulkrelay.input.models import InputRecord
 from bulkrelay.mapping.request_builder import build_json_body
 from bulkrelay.reporting.run_report import RunReporter
+from bulkrelay.state.fingerprints import fingerprint_file, fingerprint_job
+from bulkrelay.state.run_state import (
+    load_manifest,
+    load_resume_snapshot,
+    mark_final_state,
+    mark_resumed,
+    new_manifest,
+    verify_resume_identity,
+    write_manifest,
+)
 from bulkrelay.validation.preflight import preflight
 
 Sleep = Callable[[float], Awaitable[None]]
@@ -51,12 +61,52 @@ class ExecutionEngine:
         output_root: Path,
         *,
         shutdown: ShutdownController | None = None,
+        config_path: Path | None = None,
+        resume_from: Path | None = None,
     ) -> RunSummary:
         # Validate the full source before causing any remote side effects. This
         # deliberately trades a second streaming read for a safer migration UX.
         validation = preflight(config, input_path)
+        input_sha256, input_size_bytes = fingerprint_file(input_path)
+        config_sha256 = fingerprint_job(config)
+        resumed = resume_from is not None
+
+        if resume_from is None:
+            reporter = RunReporter.create(output_root, input_total=validation.records)
+            manifest = new_manifest(
+                run_directory=reporter.run_directory,
+                config_path=config_path,
+                input_path=input_path,
+                input_format=validation.input_format,
+                input_sha256=input_sha256,
+                input_size_bytes=input_size_bytes,
+                config_sha256=config_sha256,
+                input_total=validation.records,
+            )
+            write_manifest(reporter.run_directory, manifest)
+        else:
+            run_directory = resume_from.resolve()
+            manifest = load_manifest(run_directory)
+            verify_resume_identity(
+                manifest,
+                input_format=validation.input_format,
+                input_sha256=input_sha256,
+                input_size_bytes=input_size_bytes,
+                config_sha256=config_sha256,
+                input_total=validation.records,
+            )
+            snapshot = load_resume_snapshot(
+                run_directory,
+                input_total=validation.records,
+            )
+            reporter = RunReporter.resume(
+                run_directory,
+                input_total=validation.records,
+                snapshot=snapshot,
+            )
+            manifest = mark_resumed(run_directory, manifest)
+
         source = open_record_source(input_path)
-        reporter = RunReporter(output_root)
         retry_policy = RetryPolicy(
             config.retry,
             random_value=self._random_value,
@@ -77,6 +127,7 @@ class ExecutionEngine:
         try:
             forced = await self._execute_records(
                 records=source.records(),
+                completed_rows=reporter.completed_rows,
                 concurrency=config.execution.concurrency,
                 client=client,
                 config=config,
@@ -91,16 +142,26 @@ class ExecutionEngine:
                 await client.aclose()
 
         stopped_early = reporter.processed_count < validation.records
-        return reporter.finalize(
+        summary = reporter.finalize(
             input_total=validation.records,
             stopped_early=stopped_early,
             forced=forced,
+            resumed=resumed,
         )
+        mark_final_state(
+            reporter.run_directory,
+            manifest,
+            stopped_early=summary.stopped_early,
+            forced=summary.forced,
+            failed=summary.failed,
+        )
+        return summary
 
     async def _execute_records(
         self,
         *,
         records: Iterator[InputRecord],
+        completed_rows: frozenset[int],
         concurrency: int,
         client: httpx.AsyncClient,
         config: JobConfig,
@@ -129,6 +190,9 @@ class ExecutionEngine:
                 except StopIteration:
                     exhausted = True
                     return
+
+                if record.row_number in completed_rows:
+                    continue
 
                 body = build_json_body(config.request, record)
                 task = asyncio.create_task(

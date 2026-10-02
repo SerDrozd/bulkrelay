@@ -17,6 +17,7 @@ from bulkrelay.execution.models import RunSummary
 from bulkrelay.execution.shutdown import ShutdownController, ShutdownRequest
 from bulkrelay.input.base import InputError
 from bulkrelay.mapping.request_builder import MappingError
+from bulkrelay.state.run_state import ResumeError, load_manifest
 from bulkrelay.validation.preflight import preflight
 
 app = typer.Typer(
@@ -85,9 +86,10 @@ def run(
                 config=config,
                 input_path=input_path,
                 output_dir=output_dir,
+                config_path=config_path,
             )
         )
-    except (ConfigLoadError, InputError, MappingError) as exc:
+    except (ConfigLoadError, InputError, MappingError, ResumeError) as exc:
         _exit_with_error(exc)
 
     _print_run_summary(summary)
@@ -109,11 +111,76 @@ def run(
         raise typer.Exit(code=1)
 
 
+@app.command()
+def resume(
+    run_directory: Path = typer.Argument(
+        ...,
+        exists=True,
+        file_okay=False,
+        readable=True,
+        resolve_path=True,
+        help="Existing BulkRelay run directory to resume.",
+    ),
+    config_path: Path | None = typer.Option(
+        None,
+        "--config",
+        help="Job config to use. Defaults to the config path recorded by the original run.",
+    ),
+) -> None:
+    """Safely continue an interrupted run after fingerprint verification."""
+    try:
+        manifest = load_manifest(run_directory)
+        resolved_config_path = config_path
+        if resolved_config_path is None:
+            if manifest.config_path is None:
+                raise ResumeError(
+                    "This run does not record a config path; pass --config explicitly"
+                )
+            resolved_config_path = Path(manifest.config_path)
+        resolved_config_path = resolved_config_path.expanduser().resolve()
+        if not resolved_config_path.is_file():
+            raise ResumeError(f"Config file not found: {resolved_config_path}")
+
+        config = load_config(resolved_config_path)
+        input_path = resolve_input_path(resolved_config_path, config.input.file)
+        summary = asyncio.run(
+            _run_with_interrupts(
+                config=config,
+                input_path=input_path,
+                output_dir=run_directory.parent,
+                config_path=resolved_config_path,
+                resume_from=run_directory,
+            )
+        )
+    except (ConfigLoadError, InputError, MappingError, ResumeError) as exc:
+        _exit_with_error(exc)
+
+    _print_run_summary(summary)
+
+    if summary.stopped_early:
+        if summary.forced:
+            console.print(
+                "[bold red]Forced stop:[/bold red] in-flight requests were cancelled. "
+                "Remote side effects may be ambiguous."
+            )
+        else:
+            console.print(
+                "[yellow]Stopped safely after finishing in-flight records. "
+                "Resume this same run directory to continue.[/yellow]"
+            )
+        raise typer.Exit(code=130)
+
+    if summary.failed:
+        raise typer.Exit(code=1)
+
+
 async def _run_with_interrupts(
     *,
     config: JobConfig,
     input_path: Path,
     output_dir: Path,
+    config_path: Path | None = None,
+    resume_from: Path | None = None,
 ) -> RunSummary:
     shutdown = ShutdownController()
     loop = asyncio.get_running_loop()
@@ -137,6 +204,8 @@ async def _run_with_interrupts(
             input_path=input_path,
             output_root=output_dir,
             shutdown=shutdown,
+            config_path=config_path,
+            resume_from=resume_from,
         )
     finally:
         signal.signal(signal.SIGINT, previous_handler)
@@ -148,6 +217,7 @@ def _print_run_summary(summary: RunSummary) -> None:
     table.add_column("Metric")
     table.add_column("Value", justify="right")
     table.add_row("Input records", str(summary.input_total))
+    table.add_row("Resumed", "yes" if summary.resumed else "no")
     table.add_row("Processed", str(summary.total))
     table.add_row("Unprocessed", str(summary.unprocessed))
     table.add_row("Succeeded", str(summary.succeeded))

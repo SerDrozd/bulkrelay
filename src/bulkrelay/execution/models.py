@@ -36,6 +36,7 @@ class RunSummary:
     input_total: int
     stopped_early: bool = False
     forced: bool = False
+    resumed: bool = False
 
     @property
     def unprocessed(self) -> int:
