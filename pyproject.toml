@@ -4,8 +4,8 @@ build-backend = "hatchling.build"
 
 [project]
 name = "bulkrelay"
-version = "0.1.0a1"
-description = "Reliable bulk HTTP jobs from CSV files."
+version = "0.1.0a2"
+description = "Reliable bulk HTTP jobs from CSV and JSONL files."
 readme = "README.md"
 requires-python = ">=3.12"
 license = { text = "MIT" }
@@ -25,6 +25,7 @@ dev = [
   "pytest>=8.3,<9",
   "pytest-asyncio>=0.24,<1",
   "ruff>=0.6,<1",
+  "types-PyYAML>=6.0,<7",
   "uvicorn>=0.30,<1",
 ]
 
@@ -61,5 +62,6 @@ dev = [
   "pytest>=8.3,<9",
   "pytest-asyncio>=0.24,<1",
   "ruff>=0.6,<1",
+  "types-PyYAML>=6.0,<7",
   "uvicorn>=0.30,<1",
 ]

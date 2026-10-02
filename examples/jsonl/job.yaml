@@ -1,0 +1,17 @@
+version: 1
+
+input:
+  file: customers.jsonl
+
+request:
+  method: POST
+  url: http://127.0.0.1:8000/users
+  headers:
+    X-Demo-Client: bulkrelay
+  json:
+    email:
+      from: email
+    first_name:
+      from: first_name
+    source:
+      value: bulkrelay-jsonl-demo
