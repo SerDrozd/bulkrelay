@@ -47,6 +47,7 @@ def make_config(input_path: Path) -> JobConfig:
                     "source": {"value": "integration-test"},
                 },
             },
+            "retry": {"max_attempts": 1},
         }
     )
 

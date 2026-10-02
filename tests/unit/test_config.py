@@ -119,3 +119,76 @@ request:
 
     with pytest.raises(ConfigLoadError, match="duplicate key 'url'"):
         load_config(config_path)
+
+
+def test_reliability_defaults_are_safe_and_bounded(tmp_path: Path) -> None:
+    config_path = tmp_path / "job.yaml"
+    config_path.write_text(
+        """
+version: 1
+input:
+  file: customers.csv
+request:
+  method: POST
+  url: https://api.example.com/users
+  json:
+    email:
+      from: email
+""".strip(),
+        encoding="utf-8",
+    )
+
+    config = load_config(config_path)
+
+    assert config.retry.max_attempts == 1
+    assert 429 in config.retry.statuses
+    assert 503 in config.retry.statuses
+    assert config.execution.timeout.read_seconds == 30.0
+    assert config.execution.rate_limit is None
+
+
+def test_config_rejects_invalid_retry_status(tmp_path: Path) -> None:
+    config_path = tmp_path / "job.yaml"
+    config_path.write_text(
+        """
+version: 1
+input:
+  file: customers.csv
+request:
+  method: POST
+  url: https://api.example.com/users
+  json:
+    email:
+      from: email
+retry:
+  statuses: [200, 503]
+""".strip(),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ConfigLoadError, match="400-599"):
+        load_config(config_path)
+
+
+def test_config_rejects_backoff_max_below_initial(tmp_path: Path) -> None:
+    config_path = tmp_path / "job.yaml"
+    config_path.write_text(
+        """
+version: 1
+input:
+  file: customers.csv
+request:
+  method: POST
+  url: https://api.example.com/users
+  json:
+    email:
+      from: email
+retry:
+  initial_backoff_seconds: 5
+  max_backoff_seconds: 2
+""".strip(),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ConfigLoadError, match="max_backoff_seconds"):
+        load_config(config_path)
