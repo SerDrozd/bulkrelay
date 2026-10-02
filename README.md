@@ -1,22 +1,26 @@
 # BulkRelay
 
-> **Milestone 1:** reliable foundations for turning CSV records into HTTP POST requests.
+> **Milestone 2:** correctness-first bulk HTTP jobs from CSV and JSONL.
 
-BulkRelay is a small, config-driven CLI for bulk HTTP jobs. This first vertical slice deliberately
-implements one path end-to-end before adding concurrency, retries, rate limiting, checkpoints, and
-resume semantics.
+BulkRelay is a small, config-driven CLI for turning flat-file records into HTTP requests without
+silently accepting malformed input or misspelled configuration. Milestone 2 adds a full preflight
+layer before the later reliability work on retries, rate limiting, concurrency, and resume.
 
 ## What works now
 
-- validated YAML job configuration;
-- streaming CSV input;
-- declarative JSON-body mapping from CSV columns and constants;
+- strict, validated YAML configuration (`extra` fields are rejected);
+- streaming CSV and JSONL/NDJSON input;
+- CSV header/row integrity checks;
+- JSONL line-level syntax and object-shape diagnostics;
+- declarative JSON-body mapping from input fields and constants;
+- complete preflight of every input record **before the first HTTP side effect**;
+- `bulkrelay validate` for offline config/input/mapping verification;
 - sequential HTTP `POST` execution;
-- per-record success/failure capture;
+- explicit result classification (`success`, client/server/redirect/network errors);
 - append-only `results.jsonl` plus `summary.json`;
-- non-zero CLI exit status when any record fails;
+- non-zero CLI exit status when any request fails;
 - a deterministic FastAPI target for local demos and tests;
-- unit and integration coverage for the complete vertical slice.
+- unit and integration coverage for CSV, JSONL, diagnostics, preflight, and execution.
 
 ## Quick start
 
@@ -32,14 +36,27 @@ Start the fake target API in one terminal:
 uv run uvicorn examples.fake_api.app:app --reload
 ```
 
-Run the example job in another:
+Validate a job without making any HTTP requests:
+
+```bash
+uv run bulkrelay validate examples/basic/job.yaml
+```
+
+Run it:
 
 ```bash
 uv run bulkrelay run examples/basic/job.yaml
 ```
 
-The demo intentionally contains one rejected record, so the command exits with status `1` while
-still writing a complete report under `.bulkrelay/runs/`.
+The demo intentionally contains one rejected record, so `run` exits with status `1` while still
+writing a complete report under `.bulkrelay/runs/`.
+
+A JSONL example uses the identical pipeline:
+
+```bash
+uv run bulkrelay validate examples/jsonl/job.yaml
+uv run bulkrelay run examples/jsonl/job.yaml
+```
 
 ## Configuration
 
@@ -63,8 +80,44 @@ request:
       value: bulkrelay-demo
 ```
 
-`input.file` is resolved relative to the YAML config file, which keeps examples and migration jobs
-portable.
+`input.file` is resolved relative to the YAML config file. Unknown config fields are rejected rather
+than silently ignored. See [`docs/configuration.md`](docs/configuration.md) for correctness rules.
+
+## Input correctness
+
+Supported extensions:
+
+- `.csv`;
+- `.jsonl`;
+- `.ndjson`.
+
+CSV has a fixed header schema, so missing mapped columns are reported before records are scanned.
+JSONL may have heterogeneous object shapes, so mappings are checked on every line. JSON types are
+preserved for JSONL rather than coerced to strings.
+
+BulkRelay performs a complete streaming preflight before execution. A malformed record at the end of
+a file therefore prevents **all** HTTP requests instead of failing after earlier records have already
+modified the remote system.
+
+See [`docs/input-formats.md`](docs/input-formats.md).
+
+## Diagnostics
+
+A typo such as:
+
+```yaml
+email:
+  from: customer_email
+```
+
+against a file containing `email` produces a targeted diagnostic:
+
+```text
+missing mapped field 'customer_email'. Did you mean 'email'?
+```
+
+Malformed JSONL points at the physical line and JSON column. Unknown YAML settings include their
+configuration path.
 
 ## Output
 
@@ -76,29 +129,48 @@ Each run creates an isolated directory:
 └── summary.json
 ```
 
-A result row currently records the input row number, HTTP status, success flag, and a bounded error
-message for failures.
+A result records the source row/line number, HTTP status, success flag, classification, and a bounded
+error message for failures.
+
+Example failure:
+
+```json
+{
+  "row_number": 3,
+  "success": false,
+  "classification": "http_client_error",
+  "status_code": 422,
+  "error": "{\"detail\":\"fake API rejected this record\"}"
+}
+```
 
 ## Architecture
 
 ```text
-YAML config ──> Pydantic validation
-                    │
-CSV ──> streaming reader ──> declarative mapper ──> HTTP executor
-                                                     │
-                                                     v
-                                      results.jsonl + summary.json
+                         ┌──────────────────┐
+YAML config ───────────> │ strict validation│
+                         └────────┬─────────┘
+                                  │
+CSV / JSONL ──> source parser ──> full preflight ──> request mapping
+                                  │                    │
+                                  │ valid              v
+                                  └──────────────> HTTP executor
+                                                       │
+                                                       v
+                                           results.jsonl + summary.json
 ```
 
-The CLI is intentionally thin. Configuration, input, mapping, execution, and reporting are separate
-modules so later reliability features can be added without turning the command layer into the core.
+The double streaming read during `run` is deliberate at this stage: correctness wins over avoiding a
+second local file scan. It guarantees that malformed input discovered late cannot cause partial
+remote writes. Future checkpoint/fingerprint work will strengthen the boundary against source-file
+changes between preflight and execution.
 
-## Deliberate Milestone 1 limits
+## Deliberate Milestone 2 limits
 
-This is not yet the production-ready release described by the project roadmap. The first milestone
-intentionally has **no** retries, rate limiting, concurrency, checkpoints/resume, authentication
-helpers, secret interpolation, JSONL input, or transforms. Those belong to later milestones and will
-be introduced with explicit failure-path tests.
+This is not yet the production-ready release described by the roadmap. There are still **no**
+retries, rate limiting, concurrency, checkpoints/resume, authentication helpers, secret
+interpolation, transforms, or dry-run request rendering. Those features will be introduced with
+explicit failure-path tests.
 
 ## Quality checks
 
@@ -113,7 +185,7 @@ CI runs the same checks on every push and pull request.
 ## Roadmap
 
 1. ✅ Vertical slice: CSV → YAML config → HTTP POST → result report.
-2. Input/config correctness and richer validation.
+2. ✅ Correctness layer: JSONL, strict config/input validation, preflight, diagnostics, classifications.
 3. Retry policy, `Retry-After`, backoff, timeouts, and rate limiting.
 4. Bounded concurrency and graceful cancellation.
 5. Durable checkpoints, fingerprints, and safe resume.
