@@ -43,7 +43,7 @@ BulkRelay handles those concerns explicitly so the job can stay small without be
 BulkRelay currently targets Python 3.12+ and uses [uv](https://docs.astral.sh/uv/) for development.
 
 ```bash
-git clone <repository-url>
+git clone https://github.com/SerDrozd/bulkrelay.git
 cd bulkrelay
 uv sync
 ```
