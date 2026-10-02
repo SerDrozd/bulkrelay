@@ -1,10 +1,10 @@
 # BulkRelay
 
-> **Milestone 4:** bounded concurrent bulk HTTP jobs with graceful interruption semantics.
+> **Milestone 5:** durable run journals, fingerprints, checkpoints, and safe resume.
 
 BulkRelay is a config-driven CLI for turning CSV or JSONL records into reliable HTTP requests. It
 validates the complete input before the first remote side effect, then executes records through a bounded-concurrency scheduler under explicit timeout, retry,
-and rate-limit policy and writes an auditable result report.
+and rate-limit policy and writes an auditable result report. Interrupted runs can be resumed after input/config identity verification.
 
 ## What works now
 
@@ -21,6 +21,10 @@ and rate-limit policy and writes an auditable result report.
 - global requests-per-second pacing applied to every attempt, including retries;
 - first-`Ctrl+C` graceful stop that finishes only already-active records;
 - second-`Ctrl+C` escalation that cancels remaining in-flight tasks;
+- durable `run.json` manifest and atomically replaced `checkpoint.json`;
+- SHA-256 input and semantic-config fingerprints checked before resume;
+- `bulkrelay resume` that skips rows with already-persisted final results;
+- corruption detection for malformed or duplicate entries in the result journal;
 - explicit result classification for HTTP, timeout, and network failures;
 - per-record attempt counts and retryability metadata;
 - append-only `results.jsonl` plus `summary.json`;
@@ -125,7 +129,7 @@ retry:
 Retries are opt-in (`max_attempts` defaults to `1`) because retrying an ambiguous `POST` timeout can
 duplicate a remote side effect when the target API does not support idempotency.
 See [`docs/configuration.md`](docs/configuration.md), [`docs/reliability.md`](docs/reliability.md),
-and [`docs/concurrency.md`](docs/concurrency.md).
+[`docs/concurrency.md`](docs/concurrency.md), and [`docs/resume.md`](docs/resume.md).
 
 ## Correctness before side effects
 
@@ -159,13 +163,19 @@ uses capped exponential backoff plus jitter. Every retry still passes through th
 
 ## Output
 
-Each run creates an isolated directory:
+Each run creates an isolated durable directory:
 
 ```text
 .bulkrelay/runs/<timestamp>-<id>/
+├── run.json
+├── checkpoint.json
 ├── results.jsonl
 └── summary.json
 ```
+
+`results.jsonl` is the append-only source of truth for completed record identities. `checkpoint.json`
+is a compact atomic snapshot of counters; it deliberately does not grow a list of every completed row.
+`run.json` stores run state and fingerprints, not a copy of request headers or other config values.
 
 A final failed record may look like:
 
@@ -199,9 +209,33 @@ The summary includes source size, completed logical records, and actual HTTP wor
   "input_total": 100,
   "stopped_early": false,
   "forced": false,
+  "resumed": false,
   "unprocessed": 0
 }
 ```
+
+## Resume interrupted work
+
+After a graceful stop, continue the same run directory:
+
+```bash
+uv run bulkrelay resume .bulkrelay/runs/<run-id>
+```
+
+If the config moved:
+
+```bash
+uv run bulkrelay resume .bulkrelay/runs/<run-id> --config ./jobs/customers.yaml
+```
+
+Before sending anything, BulkRelay repeats full preflight and compares the current input and job
+against fingerprints from the original run. A changed file, changed mapping, changed target URL, changed
+headers, or changed reliability policy causes resume to fail closed. Persisted rows are reconstructed
+from `results.jsonl` and are not sent again.
+
+This is crash-recovery safety, **not exactly-once delivery**. If a process dies after the remote server
+commits a request but before its local result is persisted, that row is ambiguous and may be sent again.
+See [`docs/resume.md`](docs/resume.md) for the full durability model and limitations.
 
 ## Architecture
 
@@ -236,6 +270,8 @@ CSV / JSONL ──> source parser ──> full preflight ──> request mapping
                                   │
                                   └──────────> global rate limiter
 ```
+
+On resume, the engine first verifies run fingerprints, rebuilds completed row identities from the durable result journal, and only then enters the same scheduler.
 
 The scheduler never creates one task per source record. It keeps only a bounded active window. On the
 first interrupt it stops filling that window and lets existing record tasks finish. A second interrupt
