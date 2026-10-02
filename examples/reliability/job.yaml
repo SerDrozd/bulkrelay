@@ -1,0 +1,34 @@
+version: 1
+
+input:
+  file: customers.csv
+
+request:
+  method: POST
+  url: http://127.0.0.1:8000/unstable/users
+  headers:
+    X-Demo-Client: bulkrelay
+  json:
+    email:
+      from: email
+    first_name:
+      from: first_name
+    source:
+      value: reliability-demo
+
+execution:
+  timeout:
+    connect_seconds: 2
+    read_seconds: 5
+    write_seconds: 5
+    pool_seconds: 2
+  rate_limit:
+    requests_per_second: 20
+
+retry:
+  max_attempts: 4
+  statuses: [408, 425, 429, 500, 502, 503, 504]
+  initial_backoff_seconds: 0.05
+  max_backoff_seconds: 0.1
+  jitter_ratio: 0
+  respect_retry_after: true

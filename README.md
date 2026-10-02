@@ -1,26 +1,29 @@
 # BulkRelay
 
-> **Milestone 2:** correctness-first bulk HTTP jobs from CSV and JSONL.
+> **Milestone 3:** correctness-first bulk HTTP jobs with explicit retry, timeout, and rate-limit policy.
 
-BulkRelay is a small, config-driven CLI for turning flat-file records into HTTP requests without
-silently accepting malformed input or misspelled configuration. Milestone 2 adds a full preflight
-layer before the later reliability work on retries, rate limiting, concurrency, and resume.
+BulkRelay is a config-driven CLI for turning CSV or JSONL records into reliable HTTP requests. It
+validates the complete input before the first remote side effect, then executes each record under a
+bounded timeout/retry policy and writes an auditable result report.
 
 ## What works now
 
-- strict, validated YAML configuration (`extra` fields are rejected);
+- strict YAML configuration with duplicate-key and unknown-field rejection;
 - streaming CSV and JSONL/NDJSON input;
-- CSV header/row integrity checks;
-- JSONL line-level syntax and object-shape diagnostics;
+- complete preflight of every record **before the first HTTP side effect**;
 - declarative JSON-body mapping from input fields and constants;
-- complete preflight of every input record **before the first HTTP side effect**;
 - `bulkrelay validate` for offline config/input/mapping verification;
 - sequential HTTP `POST` execution;
-- explicit result classification (`success`, client/server/redirect/network errors);
+- phase-specific connect/read/write/pool timeouts;
+- configurable retryable HTTP statuses and transport failures;
+- capped exponential backoff with bounded jitter;
+- `Retry-After` support for delta-seconds and HTTP-date values;
+- global requests-per-second pacing applied to every attempt, including retries;
+- explicit result classification for HTTP, timeout, and network failures;
+- per-record attempt counts and retryability metadata;
 - append-only `results.jsonl` plus `summary.json`;
-- non-zero CLI exit status when any request fails;
-- a deterministic FastAPI target for local demos and tests;
-- unit and integration coverage for CSV, JSONL, diagnostics, preflight, and execution.
+- deterministic fake API scenarios for success, rejection, 429, 503, timeout, and recovery;
+- unit and integration tests for correctness and reliability behavior.
 
 ## Quick start
 
@@ -36,7 +39,7 @@ Start the fake target API in one terminal:
 uv run uvicorn examples.fake_api.app:app --reload
 ```
 
-Validate a job without making any HTTP requests:
+Validate a job without making HTTP requests:
 
 ```bash
 uv run bulkrelay validate examples/basic/job.yaml
@@ -48,15 +51,21 @@ Run it:
 uv run bulkrelay run examples/basic/job.yaml
 ```
 
-The demo intentionally contains one rejected record, so `run` exits with status `1` while still
-writing a complete report under `.bulkrelay/runs/`.
+The basic demo intentionally contains one permanent `422` rejection, so `run` exits with status `1`
+while still writing a complete report under `.bulkrelay/runs/`.
 
-A JSONL example uses the identical pipeline:
+### Reliability demo
+
+The fake `/unstable/users` endpoint returns `503` twice per email and then recovers. Reset its counters
+and run the job:
 
 ```bash
-uv run bulkrelay validate examples/jsonl/job.yaml
-uv run bulkrelay run examples/jsonl/job.yaml
+curl -X POST http://127.0.0.1:8000/reset
+uv run bulkrelay run examples/reliability/job.yaml
 ```
+
+Each record should succeed on its third attempt. The report will record those attempts rather than
+hiding them behind a final `201`.
 
 ## Configuration
 
@@ -68,7 +77,7 @@ input:
 
 request:
   method: POST
-  url: http://127.0.0.1:8000/users
+  url: https://api.example.com/v1/customers
   headers:
     X-Demo-Client: bulkrelay
   json:
@@ -77,13 +86,36 @@ request:
     first_name:
       from: first_name
     source:
-      value: bulkrelay-demo
+      value: migration
+
+execution:
+  timeout:
+    connect_seconds: 10
+    read_seconds: 30
+    write_seconds: 30
+    pool_seconds: 5
+  rate_limit:
+    requests_per_second: 10
+
+retry:
+  max_attempts: 4
+  statuses: [408, 425, 429, 500, 502, 503, 504]
+  initial_backoff_seconds: 1
+  max_backoff_seconds: 30
+  jitter_ratio: 0.2
+  respect_retry_after: true
 ```
 
-`input.file` is resolved relative to the YAML config file. Unknown config fields are rejected rather
-than silently ignored. See [`docs/configuration.md`](docs/configuration.md) for correctness rules.
+`max_attempts` includes the initial request. A value of `4` therefore allows at most three retries.
+Retries are opt-in (`max_attempts` defaults to `1`) because retrying an ambiguous `POST` timeout can
+duplicate a remote side effect when the target API does not support idempotency.
+See [`docs/configuration.md`](docs/configuration.md) and [`docs/reliability.md`](docs/reliability.md).
 
-## Input correctness
+## Correctness before side effects
+
+BulkRelay performs a complete streaming preflight before execution. A malformed record at the end of
+a file therefore prevents **all** HTTP requests instead of failing after earlier records have already
+modified the remote system.
 
 Supported extensions:
 
@@ -91,33 +123,23 @@ Supported extensions:
 - `.jsonl`;
 - `.ndjson`.
 
-CSV has a fixed header schema, so missing mapped columns are reported before records are scanned.
-JSONL may have heterogeneous object shapes, so mappings are checked on every line. JSON types are
-preserved for JSONL rather than coerced to strings.
-
-BulkRelay performs a complete streaming preflight before execution. A malformed record at the end of
-a file therefore prevents **all** HTTP requests instead of failing after earlier records have already
-modified the remote system.
-
 See [`docs/input-formats.md`](docs/input-formats.md).
 
-## Diagnostics
+## Retry semantics
 
-A typo such as:
+Retries are explicit rather than "retry every error".
 
-```yaml
-email:
-  from: customer_email
-```
-
-against a file containing `email` produces a targeted diagnostic:
+Default retryable statuses are:
 
 ```text
-missing mapped field 'customer_email'. Did you mean 'email'?
+408 425 429 500 502 503 504
 ```
 
-Malformed JSONL points at the physical line and JSON column. Unknown YAML settings include their
-configuration path.
+Transient HTTPX transport failures such as timeouts and connection failures are retryable. A normal
+`400`, `401`, `403`, `404`, or `422` is not retried unless explicitly configured.
+
+When a retryable response includes `Retry-After`, BulkRelay treats it as a minimum wait. Otherwise it
+uses capped exponential backoff plus jitter. Every retry still passes through the global rate limiter.
 
 ## Output
 
@@ -129,18 +151,32 @@ Each run creates an isolated directory:
 └── summary.json
 ```
 
-A result records the source row/line number, HTTP status, success flag, classification, and a bounded
-error message for failures.
-
-Example failure:
+A final failed record may look like:
 
 ```json
 {
   "row_number": 3,
   "success": false,
-  "classification": "http_client_error",
-  "status_code": 422,
-  "error": "{\"detail\":\"fake API rejected this record\"}"
+  "classification": "http_server_error",
+  "status_code": 503,
+  "attempts": 3,
+  "retryable": true,
+  "error": "{\"detail\":\"still unavailable\"}"
+}
+```
+
+`retryable: true` on a final failure means the retry budget was exhausted, not that BulkRelay skipped
+an available retry.
+
+The summary includes logical records and actual HTTP work separately:
+
+```json
+{
+  "total": 100,
+  "succeeded": 99,
+  "failed": 1,
+  "attempts": 114,
+  "retried": 9
 }
 ```
 
@@ -154,23 +190,31 @@ YAML config ───────────> │ strict validation│
 CSV / JSONL ──> source parser ──> full preflight ──> request mapping
                                   │                    │
                                   │ valid              v
-                                  └──────────────> HTTP executor
-                                                       │
-                                                       v
-                                           results.jsonl + summary.json
+                                  └──────────> rate limiter
+                                                   │
+                                                   v
+                                              HTTP attempt
+                                             /            \
+                                       success         failure
+                                                        │
+                                              retry classification
+                                                        │
+                                      ┌─────────────────┴──────────────┐
+                                      │ retryable + budget remains     │ final
+                                      v                                v
+                               Retry-After / backoff              result report
+                                      │
+                                      └──────────> rate limiter
 ```
 
-The double streaming read during `run` is deliberate at this stage: correctness wins over avoiding a
-second local file scan. It guarantees that malformed input discovered late cannot cause partial
-remote writes. Future checkpoint/fingerprint work will strengthen the boundary against source-file
-changes between preflight and execution.
+Execution is intentionally sequential in Milestone 3. The rate limiter is already isolated behind a
+small async component so Milestone 4 can add bounded workers without changing retry semantics.
 
-## Deliberate Milestone 2 limits
+## Deliberate Milestone 3 limits
 
-This is not yet the production-ready release described by the roadmap. There are still **no**
-retries, rate limiting, concurrency, checkpoints/resume, authentication helpers, secret
-interpolation, transforms, or dry-run request rendering. Those features will be introduced with
-explicit failure-path tests.
+This is still an alpha portfolio build, not the first public release. There are **no** bounded
+concurrent workers, graceful cancellation protocol, durable checkpoints/resume, authentication
+helpers, secret interpolation/redaction, transforms, or dry-run request rendering yet.
 
 ## Quality checks
 
@@ -186,7 +230,7 @@ CI runs the same checks on every push and pull request.
 
 1. ✅ Vertical slice: CSV → YAML config → HTTP POST → result report.
 2. ✅ Correctness layer: JSONL, strict config/input validation, preflight, diagnostics, classifications.
-3. Retry policy, `Retry-After`, backoff, timeouts, and rate limiting.
+3. ✅ Reliability layer: timeout policy, retries, `Retry-After`, exponential backoff, jitter, rate limit.
 4. Bounded concurrency and graceful cancellation.
 5. Durable checkpoints, fingerprints, and safe resume.
 6. Dry-run, retry-failed workflow, auth boundaries, and secret redaction.

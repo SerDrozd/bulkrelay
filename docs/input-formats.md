@@ -1,6 +1,6 @@
 # Input formats
 
-BulkRelay Milestone 2 supports streaming **CSV** and **JSONL/NDJSON** files.
+BulkRelay supports streaming **CSV** and **JSONL/NDJSON** files.
 
 ## CSV
 
