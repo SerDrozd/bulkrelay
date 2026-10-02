@@ -1,0 +1,65 @@
+name: Bug report
+description: Report a reproducible problem in BulkRelay
+title: "[Bug] "
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for reporting a problem. Remove credentials, customer data, and other sensitive information before posting logs or configuration.
+
+  - type: input
+    id: version
+    attributes:
+      label: BulkRelay version
+      placeholder: "0.1.0a5"
+    validations:
+      required: true
+
+  - type: input
+    id: python
+    attributes:
+      label: Python version
+      placeholder: "3.12.15"
+    validations:
+      required: true
+
+  - type: input
+    id: platform
+    attributes:
+      label: Operating system
+      placeholder: "Windows 11, Ubuntu 24.04, ..."
+    validations:
+      required: true
+
+  - type: textarea
+    id: description
+    attributes:
+      label: What happened?
+      description: Describe the observed behavior and what you expected instead.
+    validations:
+      required: true
+
+  - type: textarea
+    id: reproduce
+    attributes:
+      label: Steps to reproduce
+      description: Include the smallest safe example that reproduces the problem.
+      placeholder: |
+        1. Create ...
+        2. Run ...
+        3. Observe ...
+    validations:
+      required: true
+
+  - type: textarea
+    id: output
+    attributes:
+      label: Relevant output
+      description: Paste sanitized logs, tracebacks, or run output if they help diagnose the problem.
+      render: shell
+
+  - type: textarea
+    id: context
+    attributes:
+      label: Additional context
+      description: Add anything else that may be relevant.

@@ -1,0 +1,31 @@
+name: Feature request
+description: Suggest a focused improvement to BulkRelay
+title: "[Feature] "
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem
+      description: What task or limitation are you trying to address?
+    validations:
+      required: true
+
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed behavior
+      description: Describe the smallest useful behavior you would like BulkRelay to support.
+    validations:
+      required: true
+
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives considered
+      description: Describe any workaround or alternative you are using today.
+
+  - type: textarea
+    id: context
+    attributes:
+      label: Additional context
+      description: Add examples or constraints that would help evaluate the request.

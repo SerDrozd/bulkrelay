@@ -1,7 +1,6 @@
 # Checkpoints and safe resume
 
-BulkRelay keeps every run in one durable directory. Milestone 5 adds enough state to continue an
-interrupted run without replaying records whose final results were already persisted locally.
+BulkRelay keeps durable state for every run so interrupted jobs can continue without replaying records whose final results were already persisted locally.
 
 ## Run directory
 
@@ -13,65 +12,62 @@ interrupted run without replaying records whose final results were already persi
 └── summary.json
 ```
 
-`run.json` is the run manifest. It records only metadata and fingerprints, never a copy of request
-headers or other config values.
+`run.json` is the run manifest. It stores run metadata and fingerprints, not a copy of request headers or the full configuration.
 
-`results.jsonl` is the append-only result journal and the source of truth for completed rows. Every
-record is flushed and fsynced before the compact checkpoint is advanced.
+`results.jsonl` is the append-only result journal and the source of truth for completed rows. Each final result is flushed and fsynced before the compact checkpoint advances.
 
-`checkpoint.json` is an atomically replaced operator-friendly snapshot of counters. Resume rebuilds
-completed row identities from `results.jsonl` instead of storing an ever-growing row list in the
-checkpoint.
+`checkpoint.json` is an atomically replaced snapshot of counters. BulkRelay does not store an ever-growing list of completed row numbers in the checkpoint. On resume, completed row identities are rebuilt from `results.jsonl`.
 
-`summary.json` is written when a run stops or completes and is replaced after a successful resume.
+`summary.json` records the latest run summary and is replaced after a successful resume.
 
-## Resume
+## Resume an interrupted run
 
-A normal CLI run records the resolved config path. After a graceful interruption:
+A normal run records the resolved configuration path.
+
+Resume with:
 
 ```bash
 uv run bulkrelay resume .bulkrelay/runs/20261002T190000Z-ab12cd34
 ```
 
-If the config was moved, provide its new location:
+If the configuration file moved, provide its new location:
 
 ```bash
 uv run bulkrelay resume .bulkrelay/runs/20261002T190000Z-ab12cd34 \
   --config ./jobs/customers.yaml
 ```
 
-The input file may also move as long as the config points to the new location and the bytes are
-identical. File location is not part of the semantic job fingerprint.
+The input file may also move if the configuration points to the new location and the file bytes are unchanged. The file path itself is not part of the semantic job fingerprint.
 
 ## Fingerprint checks
 
-Before any resumed HTTP request, BulkRelay repeats full preflight and verifies:
+Before a resumed HTTP request is allowed to start, BulkRelay runs preflight again and verifies:
 
 - input format;
 - input SHA-256;
 - input byte size;
 - input record count;
-- semantic job-config SHA-256.
+- semantic job-configuration SHA-256.
 
-The semantic job fingerprint covers request mapping, URL, headers, timeout, concurrency, rate-limit,
-and retry policy. Only the digest is persisted. Changing any of those settings causes resume to fail
-closed.
+The semantic job fingerprint covers the parts of the configuration that can change execution behavior, including request mapping, URL, headers, timeout policy, concurrency, rate limit, and retry policy.
 
-A mismatch produces an error instead of starting a new partial migration under an old checkpoint.
+Only the digest is stored in run state. If one of those semantics changes, resume fails closed instead of continuing an old run under a new configuration.
 
 ## Journal validation
 
-Resume reads the existing result journal and refuses to continue if it contains:
+Before rebuilding completed row state, BulkRelay validates the existing result journal.
+
+Resume is refused if the journal contains:
 
 - invalid JSON;
-- blank journal lines;
+- blank lines;
 - duplicate `row_number` values;
 - row numbers outside the current input range;
 - malformed result metadata.
 
-Persisted success and failure rows are both considered completed. `resume` continues only records that
-have no durable final result. Retrying final failures is a separate workflow and is intentionally not
-part of resume semantics.
+Both successful and failed final results count as completed records. `resume` schedules only source rows that do not already have a durable final result.
+
+Retrying failed rows from a completed run is a separate workflow. It is intentionally not part of resume semantics.
 
 ## Run states
 
@@ -85,23 +81,23 @@ completed
 completed_with_failures
 ```
 
-`running` is also resumable because it may represent a process or machine crash before finalization.
-Completed runs are not resumable. A future retry command can operate on final failed records without
-conflating retry with crash recovery.
+A `running` run may be resumed because it can represent a process or machine crash before finalization.
+
+Completed runs are not resumable. This prevents resume from being used as an implicit retry command after a job has already reached a final state.
 
 ## What resume guarantees
 
-Resume prevents replay of records whose result was durably appended to `results.jsonl`, and it refuses
-to continue against changed input or changed request semantics.
+Resume prevents replay of records whose final result was durably appended to `results.jsonl`.
 
-It does **not** provide exactly-once delivery to an arbitrary remote API. If the process crashes or is
-force-killed after a remote server commits a side effect but before BulkRelay persists the local
-result, that record is ambiguous and can be sent again on resume. The same ambiguity exists after a
-network timeout.
+It also refuses to continue if the input or relevant execution semantics changed since the original run.
 
-For APIs that support idempotency keys, a later milestone can close much of this gap. Until then:
+Resume does not provide exactly-once delivery to an arbitrary remote API.
 
-- prefer graceful interruption over force-stop;
-- keep retries opt-in for side-effecting POST requests;
-- use the target API's native idempotency mechanism when available;
-- do not describe BulkRelay as an exactly-once executor.
+There is an unavoidable ambiguous window if the remote server commits a request and the BulkRelay process dies before the final result is persisted locally. The same ambiguity can occur after a network timeout. In either case, a later resume may send that source row again.
+
+Until explicit idempotency-key support is available:
+
+- prefer graceful interruption over force stop;
+- keep retries disabled unless the target endpoint's retry semantics are known;
+- use the target API's native idempotency mechanism when possible;
+- do not treat BulkRelay as an exactly-once executor.

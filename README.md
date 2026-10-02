@@ -1,45 +1,54 @@
 # BulkRelay
 
-> **Milestone 5:** durable run journals, fingerprints, checkpoints, and safe resume.
+Reliable bulk HTTP jobs from CSV and JSONL files.
 
-BulkRelay is a config-driven CLI for turning CSV or JSONL records into reliable HTTP requests. It
-validates the complete input before the first remote side effect, then executes records through a bounded-concurrency scheduler under explicit timeout, retry,
-and rate-limit policy and writes an auditable result report. Interrupted runs can be resumed after input/config identity verification.
+BulkRelay is a Python CLI for migrations, backfills, and one-off API jobs where a simple `for row in csv: requests.post(...)` script is not enough.
 
-## What works now
+It validates the full input before sending anything, keeps concurrency and request rate bounded, handles retryable failures, records every final result, and can resume interrupted runs without replaying rows that were already persisted locally.
 
-- strict YAML configuration with duplicate-key and unknown-field rejection;
-- streaming CSV and JSONL/NDJSON input;
-- complete preflight of every record **before the first HTTP side effect**;
-- declarative JSON-body mapping from input fields and constants;
-- `bulkrelay validate` for offline config/input/mapping verification;
-- bounded concurrent HTTP `POST` execution with configurable `concurrency`;
-- phase-specific connect/read/write/pool timeouts;
-- configurable retryable HTTP statuses and transport failures;
-- capped exponential backoff with bounded jitter;
-- `Retry-After` support for delta-seconds and HTTP-date values;
-- global requests-per-second pacing applied to every attempt, including retries;
-- first-`Ctrl+C` graceful stop that finishes only already-active records;
-- second-`Ctrl+C` escalation that cancels remaining in-flight tasks;
-- durable `run.json` manifest and atomically replaced `checkpoint.json`;
-- SHA-256 input and semantic-config fingerprints checked before resume;
-- `bulkrelay resume` that skips rows with already-persisted final results;
-- corruption detection for malformed or duplicate entries in the result journal;
-- explicit result classification for HTTP, timeout, and network failures;
-- per-record attempt counts and retryability metadata;
-- append-only `results.jsonl` plus `summary.json`;
-- deterministic fake API scenarios for success, rejection, 429, 503, timeout, recovery, and concurrent work;
-- unit and integration tests for correctness and reliability behavior.
+> **Status:** alpha. The execution and recovery model is tested, but the CLI and configuration format may still change before `0.1.0`.
+
+## Why BulkRelay exists
+
+Bulk API work usually starts simple and stops being simple when something goes wrong.
+
+A migration script has to answer questions such as:
+
+- What happens when row 18,431 is malformed?
+- What happens after a `429` or temporary `503`?
+- Can retries exceed the target API's rate limit?
+- What if the process is interrupted halfway through?
+- How do you know which rows actually finished?
+- Is it safe to resume after the input file or config changed?
+
+BulkRelay handles those concerns explicitly so the job can stay small without being fragile.
+
+## What it does
+
+- Reads CSV and JSONL/NDJSON input as a stream.
+- Validates the complete input and request mapping before the first HTTP side effect.
+- Builds JSON `POST` requests from input fields and constant values.
+- Rejects unknown config keys, duplicate YAML keys, malformed input, and invalid mappings.
+- Runs a bounded number of records concurrently instead of creating one task per row.
+- Applies one global requests-per-second limit to all attempts, including retries.
+- Supports connect, read, write, and pool timeouts.
+- Supports configurable retry status codes, exponential backoff, jitter, and `Retry-After`.
+- Stops gracefully on the first `Ctrl+C` and force-cancels on the second.
+- Writes an append-only `results.jsonl` journal plus run metadata and summary files.
+- Verifies input and configuration fingerprints before resuming an interrupted run.
+- Detects malformed or duplicate entries in an existing result journal before resume.
 
 ## Quick start
 
-Requires Python 3.12+ and [uv](https://docs.astral.sh/uv/).
+BulkRelay currently targets Python 3.12+ and uses [uv](https://docs.astral.sh/uv/) for development.
 
 ```bash
-uv sync --all-groups
+git clone <repository-url>
+cd bulkrelay
+uv sync
 ```
 
-Start the fake target API in one terminal:
+Start the bundled fake API in one terminal:
 
 ```bash
 uv run uvicorn examples.fake_api.app:app --reload
@@ -57,35 +66,11 @@ Run it:
 uv run bulkrelay run examples/basic/job.yaml
 ```
 
-The basic demo intentionally contains one permanent `422` rejection, so `run` exits with status `1`
-while still writing a complete report under `.bulkrelay/runs/`.
+The basic demo includes one intentional `422` response so you can see how a permanent failure is recorded without hiding the rest of the run.
 
-### Reliability demo
+## Job configuration
 
-The fake `/unstable/users` endpoint returns `503` twice per email and then recovers. Reset its counters
-and run the job:
-
-```bash
-curl -X POST http://127.0.0.1:8000/reset
-uv run bulkrelay run examples/reliability/job.yaml
-```
-
-Each record should succeed on its third attempt. The report will record those attempts rather than
-hiding them behind a final `201`.
-
-### Concurrency demo
-
-The fake `/concurrent/users` endpoint deliberately pauses each request for 250 ms. Four input records
-can be executed with a bounded window of four active records:
-
-```bash
-uv run bulkrelay run examples/concurrency/job.yaml
-```
-
-`concurrency` limits active logical records; it does not disable the global rate limiter. Retries keep
-their record slot and every retry attempt still passes through the same request-start limiter.
-
-## Configuration
+A job is a YAML file that points to an input file and describes the request to build for each record.
 
 ```yaml
 version: 1
@@ -125,59 +110,68 @@ retry:
   respect_retry_after: true
 ```
 
-`max_attempts` includes the initial request. A value of `4` therefore allows at most three retries.
-Retries are opt-in (`max_attempts` defaults to `1`) because retrying an ambiguous `POST` timeout can
-duplicate a remote side effect when the target API does not support idempotency.
-See [`docs/configuration.md`](docs/configuration.md), [`docs/reliability.md`](docs/reliability.md),
-[`docs/concurrency.md`](docs/concurrency.md), and [`docs/resume.md`](docs/resume.md).
+`max_attempts` includes the first request. Retries are disabled by default because automatically retrying an ambiguous `POST` can create duplicates when the target API does not support idempotency.
 
-## Correctness before side effects
+See [Configuration](docs/configuration.md) for the full contract.
 
-BulkRelay performs a complete streaming preflight before execution. A malformed record at the end of
-a file therefore prevents **all** HTTP requests instead of failing after earlier records have already
-modified the remote system.
+## Preflight before side effects
 
-Supported extensions:
+BulkRelay validates the entire source before execution starts.
 
-- `.csv`;
-- `.jsonl`;
-- `.ndjson`.
+That means a malformed record near the end of a file causes the run to fail before any HTTP request is sent. This is intentional. A bulk migration should not discover a structural input problem after it has already modified the remote system.
 
-See [`docs/input-formats.md`](docs/input-formats.md).
+Supported input formats:
 
-## Retry semantics
+| Format | Behavior |
+| --- | --- |
+| CSV | UTF-8, unique non-empty headers, values mapped as strings |
+| JSONL / NDJSON | One JSON object per line, JSON types preserved |
 
-Retries are explicit rather than "retry every error".
+See [Input formats](docs/input-formats.md).
 
-Default retryable statuses are:
+## Reliability model
+
+### Bounded concurrency
+
+`execution.concurrency` limits the number of logical records that can be active at once.
+
+BulkRelay does not create one asyncio task per source row. It keeps a bounded active window and starts another record only when a slot becomes available.
+
+### Rate limiting
+
+`execution.rate_limit.requests_per_second` controls HTTP request starts across the whole run. Retries use the same limiter, so increasing concurrency cannot bypass the configured request rate.
+
+### Retries
+
+Retries are policy-driven, not "retry every error".
+
+By default, the retryable status set is:
 
 ```text
 408 425 429 500 502 503 504
 ```
 
-Transient HTTPX transport failures such as timeouts and connection failures are retryable. A normal
-`400`, `401`, `403`, `404`, or `422` is not retried unless explicitly configured.
+Transient transport failures are also eligible when retries are enabled. Normal permanent client errors such as `400`, `401`, `403`, `404`, and `422` are not retried unless the config explicitly says otherwise.
 
-When a retryable response includes `Retry-After`, BulkRelay treats it as a minimum wait. Otherwise it
-uses capped exponential backoff plus jitter. Every retry still passes through the global rate limiter.
+If a retryable response contains `Retry-After`, BulkRelay treats it as a minimum delay. Otherwise it uses capped exponential backoff with jitter.
 
-## Output
+See [Reliability policy](docs/reliability.md).
 
-Each run creates an isolated durable directory:
+## Run output
+
+Every run gets its own directory:
 
 ```text
-.bulkrelay/runs/<timestamp>-<id>/
+.bulkrelay/runs/<run-id>/
 ├── run.json
 ├── checkpoint.json
 ├── results.jsonl
 └── summary.json
 ```
 
-`results.jsonl` is the append-only source of truth for completed record identities. `checkpoint.json`
-is a compact atomic snapshot of counters; it deliberately does not grow a list of every completed row.
-`run.json` stores run state and fingerprints, not a copy of request headers or other config values.
+`results.jsonl` is the append-only journal of completed records. With concurrent execution, entries are written in completion order, so `row_number` is the stable link back to the source input.
 
-A final failed record may look like:
+A failed result may look like this:
 
 ```json
 {
@@ -191,13 +185,7 @@ A final failed record may look like:
 }
 ```
 
-`retryable: true` on a final failure means the retry budget was exhausted, not that BulkRelay skipped
-an available retry.
-
-With concurrent execution, `results.jsonl` is written in completion order; `row_number` remains the
-stable source identity for each result.
-
-The summary includes source size, completed logical records, and actual HTTP work separately:
+The summary keeps logical record counts separate from actual HTTP attempts:
 
 ```json
 {
@@ -214,118 +202,120 @@ The summary includes source size, completed logical records, and actual HTTP wor
 }
 ```
 
-## Resume interrupted work
+## Interruption and resume
 
-After a graceful stop, continue the same run directory:
+The first `Ctrl+C` stops scheduling new records and lets active records finish. A second `Ctrl+C` cancels the remaining in-flight tasks.
+
+Resume an interrupted run with:
 
 ```bash
 uv run bulkrelay resume .bulkrelay/runs/<run-id>
 ```
 
-If the config moved:
+Before sending another request, BulkRelay:
 
-```bash
-uv run bulkrelay resume .bulkrelay/runs/<run-id> --config ./jobs/customers.yaml
-```
+1. runs preflight again;
+2. verifies the input format, SHA-256, byte size, and record count;
+3. verifies the semantic job configuration fingerprint;
+4. validates the existing result journal;
+5. rebuilds the set of completed source rows;
+6. schedules only records that do not already have a durable final result.
 
-Before sending anything, BulkRelay repeats full preflight and compares the current input and job
-against fingerprints from the original run. A changed file, changed mapping, changed target URL, changed
-headers, or changed reliability policy causes resume to fail closed. Persisted rows are reconstructed
-from `results.jsonl` and are not sent again.
+If the input or relevant job configuration changed, resume fails closed.
 
-This is crash-recovery safety, **not exactly-once delivery**. If a process dies after the remote server
-commits a request but before its local result is persisted, that row is ambiguous and may be sent again.
-See [`docs/resume.md`](docs/resume.md) for the full durability model and limitations.
+This prevents replay of rows whose results were already persisted locally. It does **not** provide exactly-once delivery to an arbitrary remote API. If the remote server commits a request and the local process dies before the result is written, that row is ambiguous and may be sent again.
+
+See [Checkpoints and safe resume](docs/resume.md).
 
 ## Architecture
 
 ```text
-                         ┌──────────────────┐
-YAML config ───────────> │ strict validation│
-                         └────────┬─────────┘
-                                  │
-CSV / JSONL ──> source parser ──> full preflight ──> request mapping
-                                                        │
-                                                        v
-                                           bounded task window
-                                          (≤ concurrency records)
-                                            /      |       \
-                                           v       v        v
-                                      record    record    record
-                                        │          │         │
-                                        └──── shared ────────┘
-                                               │
-                                       global rate limiter
-                                               │
-                                          HTTP attempt
-                                         /            \
-                                   success         failure
-                                                    │
-                                          retry classification
-                                                    │
-                                  ┌─────────────────┴──────────────┐
-                                  │ retryable + budget remains     │ final
-                                  v                                v
-                           Retry-After / backoff              result report
-                                  │
-                                  └──────────> global rate limiter
+                 YAML config
+                     |
+                     v
+              strict validation
+                     |
+CSV / JSONL -> full preflight -> request mapping
+                                     |
+                                     v
+                            bounded scheduler
+                              /    |    \
+                             v     v     v
+                          record record record
+                              \    |    /
+                               \   |   /
+                           global rate limiter
+                                   |
+                                   v
+                              HTTP attempt
+                              /          \
+                         success        failure
+                                           |
+                                  retry classification
+                                    /            \
+                              retryable          final
+                                  |                |
+                         backoff / Retry-After     |
+                                  |                |
+                                  +-------> result journal
 ```
 
-On resume, the engine first verifies run fingerprints, rebuilds completed row identities from the durable result journal, and only then enters the same scheduler.
+The scheduler, retry policy, rate limiter, and run-state layer are separate modules so each behavior can be tested without requiring a live third-party API.
 
-The scheduler never creates one task per source record. It keeps only a bounded active window. On the
-first interrupt it stops filling that window and lets existing record tasks finish. A second interrupt
-cancels the remaining tasks and marks the run as forced.
+## Current limitations
 
-## Graceful interruption
+BulkRelay is intentionally narrow at this stage.
 
-First `Ctrl+C`:
+- Requests are currently `POST` only.
+- There are no built-in OAuth flows or provider-specific authentication helpers.
+- Secret interpolation and log redaction are not implemented yet.
+- There is no dry-run request renderer yet.
+- There is no separate retry-failed command for completed runs yet.
+- Idempotency-key support is not implemented yet.
+- Resume protects locally persisted results, not remote exactly-once delivery.
 
-```text
-stop scheduling new records → finish active records → write summary → exit 130
+These are product boundaries, not hidden guarantees.
+
+## Development
+
+Install the project and development tools:
+
+```bash
+uv sync
 ```
 
-Second `Ctrl+C`:
-
-```text
-cancel active tasks → write forced summary → exit 130
-```
-
-Forced cancellation can leave remote side effects ambiguous: the server may have committed a request
-before the local coroutine was cancelled. See [`docs/concurrency.md`](docs/concurrency.md).
-
-## Deliberate Milestone 4 limits
-
-This is still an alpha portfolio build, not the first public release. There are **no** durable
-checkpoints/resume, authentication helpers, secret interpolation/redaction, transforms, dry-run
-request rendering, or idempotency-key support yet. Because resume is not available, a stopped job must
-not be blindly rerun against a non-idempotent endpoint.
-
-## Quality checks
+Run the quality checks:
 
 ```bash
 uv run ruff check .
-uv run mypy
+uv run mypy src
 uv run pytest
 ```
 
-CI runs the same checks on every push and pull request.
+The current test suite covers config and input validation, request mapping, retry policy, rate limiting, concurrency, shutdown behavior, run-state corruption checks, and interrupted-run recovery.
+
+## Documentation
+
+- [Configuration](docs/configuration.md)
+- [Input formats](docs/input-formats.md)
+- [Reliability policy](docs/reliability.md)
+- [Concurrency and shutdown](docs/concurrency.md)
+- [Checkpoints and safe resume](docs/resume.md)
+- [Contributing](CONTRIBUTING.md)
+- [Security](SECURITY.md)
 
 ## Roadmap
 
-1. ✅ Vertical slice: CSV → YAML config → HTTP POST → result report.
-2. ✅ Correctness layer: JSONL, strict config/input validation, preflight, diagnostics, classifications.
-3. ✅ Reliability layer: timeout policy, retries, `Retry-After`, exponential backoff, jitter, rate limit.
-4. ✅ Bounded concurrency and graceful cancellation.
-5. Durable checkpoints, fingerprints, and safe resume.
-6. Dry-run, retry-failed workflow, auth boundaries, and secret redaction.
-7. Documentation, demo polish, packaging, benchmarks, and first public release.
+The next work is focused on operational safety and release polish:
 
-## Security
-
-Do not commit production datasets, generated run directories, tokens, or credentials. See
-[`SECURITY.md`](SECURITY.md).
+- secret interpolation and redaction;
+- dry-run request rendering;
+- explicit idempotency-key support;
+- retrying selected failures from completed runs;
+- packaging and install UX;
+- reproducible benchmarks;
+- release documentation and demo assets.
 
 ## License
 
-MIT.
+MIT. See [LICENSE](LICENSE).
